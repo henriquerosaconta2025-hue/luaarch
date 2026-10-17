@@ -1,0 +1,30 @@
+struct dirent {
+   unsigned long d_ino;
+   unsigned long d_off;
+   unsigned short d_reclen;
+   unsigned char d_type;
+   char d_name[256];
+};
+long telldir(void*);
+void seekdir(void* dirp, long loc);
+
+struct dirent* readdir(void* dir);
+void* opendir(const char* path);
+int closedir(void* dir);
+int mkdir(const char* path, int mode);
+int rmdir(const char* path);
+int unlink(const char* path);
+int rename(const char* oldpath, const char* newpath);
+int chmod(const char* path, int mode);
+int flock(int fd, int operation);
+int open(const char *pathname, int flags, int mode);
+uint64_t read(int fd, void *buf, uint64_t count);
+uint64_t write(int fd, const void *buf, uint64_t count);
+int close(int fd);
+uint64_t readlink(const char *path, char *buf, uint64_t bufsiz);
+int chdir(const char *path);
+char *getcwd(char *buf, uint64_t size);
+int access(const char *pathname, int mode);
+int symlink(const char *target, const char *linkpath);
+int link(const char *oldpath, const char *newpath);
+int fflush(int fd);

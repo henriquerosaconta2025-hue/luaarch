@@ -1,0 +1,41 @@
+#!/luajit
+local ffi = require("ffi")
+local set = arg[1] == "set"
+
+ffi.cdef[[
+struct winsize {
+    unsigned short ws_row;
+    unsigned short ws_col;
+    unsigned short ws_xpixel;
+    unsigned short ws_ypixel;
+};
+
+int ioctl(int fd, unsigned long request, ...);
+char* strerror(int err);
+]]
+
+local winsize = ffi.new("struct winsize")
+
+if set then
+    local row = tonumber(arg[2])
+    local col = tonumber(arg[3])
+    winsize.ws_row = row
+    winsize.ws_col = col
+    if ffi.C.ioctl(0, 0x5414, winsize) == -1 then
+        print(ffi.string(ffi.C.strerror(ffi.errno())))
+    end
+
+    return
+end
+
+local ioctled = ffi.C.ioctl(tonumber(arg[1]) or 1, ffi.cast("int", 0x5413), winsize)
+
+if ioctled == -1 then
+    print(ffi.string(ffi.C.strerror(ffi.errno())))
+    return
+end
+
+print("Rows    : " .. tonumber(winsize.ws_row))
+print("Cols    : " .. tonumber(winsize.ws_col))
+print("YPixels : " .. tonumber(winsize.ws_ypixel))
+print("XPixels : " .. tonumber(winsize.ws_xpixel))

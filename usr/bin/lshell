@@ -1,0 +1,264 @@
+#!/usr/bin/env -S /luajit
+
+local ffi = require("ffi")
+local C = ffi.C
+
+ffi.cdef[[
+typedef void (*sighandler_t)(int);
+int fork();
+int execvp(const char *file, char *const argv[]);
+int waitpid(int pid, int *status, int options);
+int getpid(void);
+char *getcwd(char *buf, long size);
+char* strerror(int errno);
+int chdir(const char* path);
+int setenv(const char *name, const char *value, int overwrite);
+int unsetenv(const char *name);
+unsigned int geteuid(void);
+int open(const char *pathname, int flags, int blablabla);
+int dup2(int oldfd, int newfd);
+int close(int fd);
+int setsid();
+int close(int fd);
+
+int setpgid(int pid, int pgid);
+int tcgetpgrp(int fd);
+int tcsetpgrp(int fd, int pgrp);
+int prctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5);
+void perror(const char *s);
+
+int kill(int pid, int sig);
+sighandler_t signal(int sig, sighandler_t handler);
+int raise(int sig);
+]]
+
+ffi.C.signal(22, ffi.cast("sighandler_t", 1))
+
+local shellpgid = ffi.C.getpid()
+
+print("PID: " .. shellpgid)
+
+ffi.C.prctl(15, ffi.cast("unsigned long", "lshell"), 0, 0, 0)
+
+if ffi.C.setpgid(shellpgid, shellpgid) ~= 0 then ffi.C.perror("setpgid") end
+if ffi.C.tcsetpgrp(0, shellpgid) ~= 0 then ffi.C.perror("tcsetpgrp") end
+
+ffi.C.setsid()
+
+function returnsig(exit)
+    local decoded = bit.band(exit, 0x7f)
+
+    if decoded == 0 then return nil end
+
+    if decoded == 2 then
+        return "SIGINT"
+    elseif decoded == 3 then
+        return "SIGQUIT"
+    elseif decoded == 127 then
+        return "SIGSTP"
+    elseif decoded == 9 then
+        return "SIGKILL🗣 🔥"
+    elseif decoded == 11 then
+        return "SIGSEGV🗣 🔥"
+    elseif decoded == 13 then
+        return "SIGPIPE🗣 🔥"
+    elseif decoded == 6 then
+        return "SIGABRT"
+    else
+        return "sig:" .. decoded
+    end
+end
+
+local builtin = {
+    ["!cd"] = function (args)
+        local success = C.chdir(args[2])
+        if success == -1 then
+            print("cd: " .. ffi.string(C.strerror(ffi.errno())))
+        end
+    end,
+    ["!ver"] = function ()
+        print("LuaShell - 1.0")
+    end,
+    ["!env"] = function (args)
+        if args[2] == "add" then
+           C.setenv(tostring(args[3]), tostring(args[4]), 1)
+        elseif args[2] == "del" then
+           C.unsetenv(tostring(args[3]))
+        end
+    end,
+    ["$"] = function (args)
+        print(os.getenv(args[2]))
+    end,
+    ["!pipe"] = function (args)
+        if not args[3] then print("missing arguments") return end
+        local action = args[2]
+        local pfile = C.open(args[3], bit.bor(2, 64, 512), 0644)
+        local rest = {}
+        if pfile == -1 then
+            print("LuaShell: " .. args[3] .. ": " .. ffi.string(C.strerror(ffi.errno())))
+            return
+        end
+        for i = 4, #args do
+            table.insert(rest, args[i])
+        end
+        if action == "stdin" then run(rest, pfile, nil, nil) end
+        if action == "stdout" then run(rest, nil, pfile, nil) end
+        if action == "stderr" then run(rest, nil, nil, pfile) end
+        if action == "all" then run(rest, pfile, pfile, pfile) end
+        C.close(pfile)
+    end,
+    ["!geteuid"] = function ()
+        print("User UUID: " .. C.geteuid())
+    end,
+    ["!fg"] = function (args)
+        local pid = tonumber(args[2])
+        if not pid then return end
+        local status = ffi.new("int[1]")
+        ffi.C.kill(pid, 18)
+        ffi.C.kill(pid, 18)
+        ffi.C.kill(pid, 18)
+        ffi.C.tcsetpgrp(0, pid)
+        ffi.C.setpgid(pid, pid)
+        C.waitpid(tonumber(pid), status, 2)
+        local sig = returnsig(status[0])
+        if sig then
+            print(sig)
+        end
+        ffi.C.tcsetpgrp(0, shellpgid)
+    end,
+    ["!pid"] = function ()
+        print(C.getpid())
+    end,
+    ["cls"] = function ()
+        io.write("\27[2J\27[3J\27[H"); io.flush()
+    end,
+    ["a"] = function ()
+        print("a")
+    end
+}
+
+
+
+
+function toargv(tbl)
+    local argc = #tbl
+    local argv = ffi.new("char*[?]", argc + 1)
+
+    for i = 1, argc do
+        argv[i - 1] = ffi.cast("char*", tbl[i])
+    end
+
+    argv[argc] = nil
+    return argv
+end
+
+
+
+
+function split(cmd)
+    local args = {}
+
+    cmd = cmd:gsub("%$%(%s*([^)]+)%s*%)", function (subcmd)
+        local handle = io.popen(subcmd)
+        if not handle then return "" end
+        local readed = handle:read("*a")
+        handle:close()
+        readed = readed:gsub("%s+$", "")
+        return readed
+    end)
+
+    cmd = cmd:gsub('"[^"]+"', function(s) return s:gsub(' ', '\1') end)
+    cmd = cmd:gsub("'[^']+'", function(s) return s:gsub(' ', '\1') end)
+
+    for match in cmd:gmatch('[^%s]+') do
+        if match:sub(1,1) == '"' or match:sub(1,1) == "'" then
+            match = match:sub(2, -2)
+        end
+        match = match:gsub('\1', ' ')
+        table.insert(args, match)
+    end
+    return args
+end
+
+
+
+function getcwd()
+    local buf = ffi.new("char[?]", 4096)
+    ffi.C.getcwd(buf, 4095)
+    return ffi.string(buf, 4096)
+end
+
+
+function run(args, stdin, stdout, stderr)
+    local pid = C.fork()
+    local bg = false
+
+    if args[#args] == "&" then
+       bg = true
+       args[#args] = nil
+    end
+
+    if pid == 0 then
+        if stdin then C.dup2(stdin, 0)   end
+        if stdout then C.dup2(stdout, 1) end
+        if stderr then C.dup2(stderr, 2) end
+        ffi.C.setpgid(0, 0)
+        C.execvp(args[1], toargv(args))
+        print("LuaShell: " .. args[1] .. ": " .. ffi.string(C.strerror(ffi.errno())))
+        os.exit(0)
+    else
+        ffi.C.setpgid(pid, pid)
+
+        if not bg then
+            ffi.C.tcsetpgrp(0, pid)
+            local status = ffi.new("int[1]")
+            C.waitpid(pid, status, 2)
+            local sig = returnsig(status[0])
+            if sig then
+                print(sig .. " - [" .. pid .. "]")
+            end
+            ffi.C.tcsetpgrp(0, shellpgid)
+        else
+            print("[" .. pid .. "]")
+        end
+    end
+end
+
+C.setenv("SHELL", "/usr/bin/lshell", 1)
+C.chdir("/mnt/c/Users/graog/OneDrive/Desktop")
+C.setenv("PATH", "/:/usr/bin/:/elf/:/tui/", 1)
+
+while true do
+    io.write("\27[36m" .. C.geteuid() .. ":" .. getcwd() .. "> \27[0m")
+
+    local continue = true
+    local status = ffi.new("int[1]")
+    local line = io.read("*l")
+
+    if not line or line == "exit" then break end
+    local args = split(line)
+
+    if args[1] == "type" and args[2] then
+        print(builtin[args[2]] and args[2] .. " is a builtin" or args[2] .. " is not a builtin")
+        continue = false
+    end
+
+    do
+        if builtin[args[1]] then
+            builtin[args[1]](args)
+            continue = false
+        end
+    end
+
+    if #args > 0 and continue then
+        run(args)
+    end
+
+    local _pid = C.waitpid(-1, status, 1)
+    if _pid > 0 then
+        local sig = returnsig(status[0])
+        if sig then
+           print("done: [" .. _pid .. "] - " .. returnsig(status[0]))
+        end
+    end
+end

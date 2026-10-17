@@ -1,0 +1,2 @@
+root $argon2id$v=19$m=9,t=3,p=1$/Yl7B7a9qo6rLoslD2BJwg$MK2fzs/RLLmyKAweYA8uF/2xaN37P0uoKS6f+UzzZ8U 0 0 /elf/bash
+breakuser $argon2id$v=19$m=9,t=3,p=1$dW9C3DWb/MqXJBRKqI6wJw$7wIply/GuNJmHkSwc2ZGde6lEEJ2MjFBeGRZG76PO1Y 1 1 /elf/bash

@@ -1,0 +1,244 @@
+#!/usr/bin/env -S luajit
+
+
+local ffi = require("ffi")
+local bit = require("bit")
+
+ffi.cdef([[
+  struct sockaddr_in {
+    unsigned short sin_family;
+    unsigned short sin_port;
+    unsigned int sin_addr;
+    char sin_zero[8];
+  };
+
+  struct sockaddr {
+    unsigned short sa_family;
+    char sa_data[14];
+  };
+
+  struct ifreq {
+    char ifr_name[16];
+    union {
+      struct sockaddr ifr_addr;
+      short ifr_flags;
+      int ifr_ifindex;
+      int ifr_mtu;
+    };
+  };
+
+  struct if_nameindex {
+    unsigned int if_index;
+    char *if_name;
+  };
+
+  struct if_nameindex *if_nameindex(void);
+  void if_freenameindex(struct if_nameindex *);
+
+  int socket(int, int, int);
+  int ioctl(int fd, unsigned long request, void *argp);
+  int close(int fd);
+  unsigned int inet_addr(const char *cp);
+]])
+
+local getflags = 0x8913
+local setflags = 0x8914
+local getIp = 0x8915
+local setIp = 0x8916
+local up = 0x1
+local running = 0x40
+local sock = ffi.C.socket(2, 1, 0)
+local ifr = ffi.new("struct ifreq")
+local broadcast = 0x2
+local loopback  = 0x8
+local multicast = 0x1000
+
+function ipInterfaces()
+    local list = ffi.C.if_nameindex()
+    if list == nil then
+        return nil
+    end
+
+    local out = {}
+    local i = 0
+
+    while list[i].if_index ~= 0 do
+        out[#out + 1] = {
+            name = ffi.string(list[i].if_name),
+            index = tonumber(list[i].if_index)
+        }
+        i = i + 1
+    end
+
+    ffi.C.if_freenameindex(list)
+
+    return out
+end
+
+function getmtu(interface)
+    if not interface then return "specify the interface" end
+    ffi.copy(ifr.ifr_name, interface)
+    ffi.C.ioctl(sock, 0x8921, ifr)
+    return ifr.ifr_mtu
+end
+
+function setmtu(mtu, interface)
+    mtu = tonumber(mtu)
+    if not interface then return "specify the interface" end
+    ffi.copy(ifr.ifr_name, interface)
+    ifr.ifr_mtu = mtu
+    return ffi.C.ioctl(sock, 0x8922, ifr)
+end
+
+function ipDown(name)
+    ffi.copy(ifr.ifr_name, name)
+    local ret2 = ffi.C.ioctl(sock, getflags, ifr)
+    ifr.ifr_flags = bit.band(ifr.ifr_flags, bit.bnot(up))
+    return ffi.C.ioctl(sock, setflags, ifr), ret2
+end
+
+function ipUp(name)
+    ffi.copy(ifr.ifr_name, name)
+    local ret2 = ffi.C.ioctl(sock, getflags, ifr)
+    ifr.ifr_flags = bit.bor(ifr.ifr_flags, up)
+    return ffi.C.ioctl(sock, setflags, ifr), ret2
+end
+
+function ipStatus(name)
+    ffi.copy(ifr.ifr_name, name)
+    ffi.C.ioctl(sock, getflags, ifr)
+    local flags = ifr.ifr_flags
+    return {
+        up      = bit.band(flags, up) ~= 0,
+        running = bit.band(flags, running) ~= 0,
+        broadcast = bit.band(flags, broadcast) ~= 0,
+        loopback  = bit.band(flags, loopback) ~= 0,
+        multicast = bit.band(flags, multicast) ~= 0,
+        flags   = flags
+    }
+end
+
+local getMac = 0x8927
+
+function ipMac(name)
+    ffi.fill(ifr, ffi.sizeof(ifr))
+    ffi.copy(ifr.ifr_name, name, math.min(#name, 15))
+
+    if ffi.C.ioctl(sock, getMac, ifr) == -1 then
+        return "invalid args. ioctl failed."
+    end
+
+    local mac = ffi.cast("uint8_t*", ifr.ifr_addr.sa_data)
+
+    return string.format(
+        "%02x:%02x:%02x:%02x:%02x:%02x",
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
+    )
+end
+
+function ipSetAddr(name, addr)
+    ffi.copy(ifr.ifr_name, name, math.min(#name, 15))
+
+    local sin = ffi.cast(
+        "struct sockaddr_in*",
+        ifr.ifr_addr
+    )
+
+    local iptoset = ffi.C.inet_addr(addr)
+
+    if iptoset == 0xFFFFFFFF then return "invalid IP" end
+
+    sin.sin_family = 2
+    sin.sin_addr = ffi.C.inet_addr(addr)
+
+    return ffi.C.ioctl(sock, setIp, ifr)
+end
+
+function ipAddr(name)
+    ffi.copy(ifr.ifr_name, name)
+    local ret = ffi.C.ioctl(sock, getIp, ifr)
+    if ret == -1 then return nil end
+    local b = ifr.ifr_addr.sa_data
+    return string.format("%d.%d.%d.%d",
+        bit.band(b[2], 0xff),
+        bit.band(b[3], 0xff),
+        bit.band(b[4], 0xff),
+        bit.band(b[5], 0xff))
+end
+
+
+if arg[1] == "set" then
+    local cable = arg[2]
+
+    if arg[3] == "down" then
+        local ret1, ret2 = ipDown(cable)
+        print(ret1 .. " " .. ret2)
+    elseif arg[3] == "up" then
+        local ret1, ret2 = ipUp(cable)
+        print(ret1 .. " " .. ret2)
+    elseif arg[3] == "addr" then
+        local newaddr = arg[4]
+        print(ipSetAddr(cable, newaddr))
+    elseif arg[3] == "mtu" then
+        print(setmtu(arg[4], arg[2]))
+    end
+
+    ffi.C.close(sock)
+    return
+end
+
+if arg[1] == "get" then
+    if arg[3] == "status" then
+        local t = ipStatus(arg[2])
+        print("Up         : " ..  tostring(t.up))
+        print("Running    : " ..  tostring(t.running))
+        print("BroadCast  : " ..  tostring(t.broadcast))
+        print("LoopBack   : " ..  tostring(t.loopback))
+        print("MultiCast  : " ..  tostring(t.multicast))
+        print("Flags      : " ..  tonumber(t.flags))
+    end
+
+    if arg[3] == "addr" then
+        local addr = ipAddr(arg[2])
+        print(addr)
+    end
+
+    if arg[3] == "mac" then
+        local macaddr = ipMac(arg[2])
+        print(macaddr)
+    end
+
+    if arg[3] == "mtu" then
+        print(getmtu(arg[2]))
+    end
+
+    if arg[2] == "list" then
+        local list = ipInterfaces()
+        if list == nil then print("no interfaces.") return end
+        for _, v in ipairs(list) do
+           local status = ipStatus(v.name)
+           local ip = ipAddr(v.name)
+           print(string.format([[%s: %-16.17s (%s%s, %s)]],
+             v.index,
+             v.name,
+             status.up and "U" or "-",
+             status.running and "R" or "-",
+             ip
+           ))
+        end
+    end
+
+    ffi.C.close(sock)
+    return
+end
+
+print(arg[0] .. ": set <interface> <action> (up, down, addr, mtu)")
+print(arg[0] .. ": get <interface> <action or list> (status, addr, mac, list, mtu)")
+print("meanings: U = Up, '-' = Down, R = Running")
+
+ffi.C.close(sock)

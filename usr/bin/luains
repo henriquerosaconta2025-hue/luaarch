@@ -1,0 +1,268 @@
+#!/usr/bin/env -S luajit
+
+local ffi = require("ffi")
+local net = require("luajit_replit.net")
+local files = require("luajit_replit.files")
+
+ffi.cdef[[
+typedef struct archive archive;
+typedef struct archive_entry archive_entry;
+
+archive *archive_read_new(void);
+int archive_read_support_format_tar(archive *);
+int archive_read_support_filter_all(archive *);
+int archive_read_open_memory(archive *, const void *, size_t);
+int archive_read_next_header(archive *, archive_entry **);
+const char *archive_entry_pathname(archive_entry *);
+int archive_read_extract(archive *, archive_entry *, int flags);
+int archive_read_free(archive *);
+const char * archive_entry_pathname(archive_entry*);
+void archive_entry_set_pathname(archive_entry *, const char *);
+void *malloc(size_t);
+int mkdir(const char* path, int perms);
+const char* archive_format_name(archive*);
+const char* archive_filter_name(archive*, int);
+const char* archive_error_string(archive*);
+
+int rmdir(const char *pathname);
+]]
+
+local rootperm = 493
+
+files.mkdir("/luains/", rootperm)
+files.mkdir("/luains/installed", rootperm)
+files.mkdir("/elf/", rootperm)
+
+local host = arg[3] or "geo.mirror.pkgbuild.com"
+local C = ffi.load("archive")
+
+function writefile(path, data)
+    local f = io.open(path, "wb")
+    if not f then return end
+    f:write(data)
+    f:close()
+end
+
+function extract(data, outdirname)
+    local unpackedoutf = io.open(outdirname .. "/unpacked.info", "a")
+    local pkg = C.archive_read_new()
+    local extracted = 0
+    local entry = ffi.new("archive_entry *[1]")
+
+    C.archive_read_support_format_tar(pkg)
+    C.archive_read_support_filter_all(pkg)
+    if C.archive_read_open_memory(pkg, data, #data) ~= 0 then
+        print("[ERROR] archive_read_open_memory: " .. ffi.string(C.archive_error_string(pkg)))
+    end
+
+    if C.archive_read_next_header(pkg, entry) == 0 then
+        local pathname = ffi.string(C.archive_entry_pathname(entry[0]))
+        extracted = extracted + 1
+        C.archive_entry_set_pathname(entry[0], outdirname .. "/" .. pathname)
+        C.archive_read_extract(pkg, entry[0], 0)
+        io.write("\r\27[K[LibArchive] extracting files: " .. extracted)
+        unpackedoutf:write(pathname .. "\n")
+    else
+        print("[LibArchive] error on reading next header: " .. ffi.string(C.archive_error_string(pkg)))
+        os.exit(1)
+    end
+
+    local format = C.archive_format_name(pkg)
+    print("\n[LibArchive] detected format: " .. ffi.string(format))
+
+    while C.archive_read_next_header(pkg, entry) == 0 do
+        local pathname = ffi.string(C.archive_entry_pathname(entry[0]))
+        extracted = extracted + 1
+        C.archive_entry_set_pathname(entry[0], outdirname .. "/" .. pathname)
+        C.archive_read_extract(pkg, entry[0], 0)
+        io.write("\r[LibArchive] extracting files: " .. extracted)
+        unpackedoutf:write(pathname .. "\n")
+    end
+    C.archive_read_free(pkg)
+end
+
+
+function clone(pkg, repo)
+    print("installing package " .. pkg)
+
+    local url = "/" .. repo .. "/" .. pkg
+    local tcp = net.tcp()
+    local outdirname = ""
+
+    if tcp:connect(net.dresolve(host, 0), 80) == -1 then
+        print("[TCP] Connect error: " .. net.geterrorstr())
+        return
+    end
+
+    tcp:write(
+     "GET " .. url .. " HTTP/1.1\r\n" ..
+     "Host: " .. host .. "\r\n" ..
+     "Connection: close\r\n\r\n"
+    )
+
+    local data = {}
+    local bytesread = 0
+
+    while true do
+        local recei = tcp:read(4096)
+        if not recei then break end
+        bytesread = bytesread + #recei
+        io.write("\r\27[K[TCP] reading " .. #data .. " chunks... (" .. bytesread .. " received)"); io.flush()
+        table.insert(data, recei)
+    end
+
+    print()
+
+    local datatext = table.concat(data)
+    local body = datatext:match("\r\n\r\n(.*)")
+    local version, status = datatext:match("(%S+)%s+(%S+)")
+
+    if tonumber(status) ~= 200 then
+        print("error on fetching package: " .. version .. " " .. status)
+        tcp:close()
+        return -2
+    end
+
+    outdirname = "./" .. (pkg:gsub(".pkg.tar.zst", ""))
+
+    C.mkdir(outdirname, 511)
+
+    extract(body, outdirname)
+    print("\n[DONE] everything got extracted on directory " .. outdirname .. "/")
+
+    tcp:close()
+    return 0, outdirname, pkg
+end
+
+function readfile(file)
+    local fhandler = io.open(file, "r")
+
+    if not fhandler then return nil end
+
+    local data = {}
+
+    while true do
+        local chunk = fhandler:read(4096)
+        if not chunk then break end
+        table.insert(data, chunk)
+    end
+
+    fhandler:close()
+
+    return table.concat(data)
+end
+
+function askinstall(outdirname, pkgname)
+    io.write("install it on system? "); io.flush()
+    local comfirm = io.read(1)
+    if comfirm == "y" then
+        local dir = files.opendir(outdirname .. "/usr/bin/")
+        local libonly = false
+
+        if dir == ffi.NULL then
+            libonly = true
+        end
+
+        files.mkdir("/luains/installed/" .. pkgname, rootperm)
+
+        local installedfile
+        if not libonly then
+            installedfile = io.open("/luains/installed/" .. pkgname .. "/installed", "w")
+
+            if not installedfile then
+               print("error: installedfile")
+               files.closedir(dir)
+               return
+            end
+        end
+
+        while true do
+            if libonly then break end
+            local entry = files.readdir(dir)
+            if entry == ffi.NULL then break end
+            local fname = ffi.string(entry.d_name)
+            if fname ~= ".." and fname ~= "." then
+                local content = readfile(outdirname .. "/usr/bin/" .. fname)
+                if content then
+                    print("copying " .. fname .. " to /elf/" .. fname)
+                    writefile("/elf/" .. fname, content)
+                    installedfile:write("/elf/" .. fname .. "\n")
+                    files.chmod("/elf/" .. fname, rootperm)
+                end
+            end
+        end
+
+        if libonly then
+           print("this is lib only?")
+        end
+        files.closedir(dir)
+    end
+end
+
+if not arg[1] then
+    print("missing operand")
+    return
+end
+
+if arg[1] == "rm" then
+    local toremove = readfile("/luains/installed/" .. arg[2] .. "/installed")
+
+    if toremove then
+        for line in toremove:gmatch("[^\r\n]+") do
+            print("removing " .. line)
+            files.unlink(line)
+        end
+    else
+        print("could not find " .. "/luains/installed/" .. arg[2] .. "/installed")
+    end
+
+    files.unlink("/luains/installed/" .. arg[2] .. "/installed")
+    files.rmdir("/luains/installed/" .. arg[2])
+
+    return
+end
+
+if arg[1] == "list" then
+    local dir = files.opendir("/luains/installed")
+    if dir == ffi.NULL then print("could not found register") return end
+
+    while true do
+        local entry = files.readdir(dir)
+        if entry == ffi.NULL then break end
+        local name = ffi.string(entry.d_name)
+        if name ~= ".." and name ~= "." then
+            print(name)
+            local content = readfile("/luains/installed/" .. name .."/installed")
+            if content then
+                for line in content:gmatch("[^\r\n]+") do
+                    print(" " .. line)
+                end
+                print("")
+            end
+        end
+    end
+
+    files.closedir(dir)
+    return
+end
+
+if arg[1] == "addowner" then
+    local pkg = io.open("/luains/installed/" .. arg[2] .. "/installed", "a")
+    if not pkg then print("not found") return end
+    pkg:write(arg[3])
+    return
+end
+
+print("LuaINS - General purpose package installer for arch linux")
+
+local insret, outdirname, pkgname = clone(arg[1], "core/os/x86_64/")
+
+if insret == -2 then
+    print("")
+    print("[FALLBACK] trying again on extra/os/x86_64/\n")
+    insret, outdirname, pkgname = clone(arg[1], "extra/os/x86_64/")
+end
+
+if insret == 0 then
+   askinstall(outdirname, pkgname)
+end

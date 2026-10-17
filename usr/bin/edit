@@ -1,0 +1,33 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+local mode = arg[1]
+local readline = ffi.load("readline.so.8")
+
+ffi.cdef[[
+    char *readline(const char *prompt);
+    void free(void *ptr);
+]]
+
+if not mode then
+    print("missing mode")
+    return
+end
+
+if not arg[2] then
+    print("missing file")
+    return
+end
+
+local f = io.open(arg[2], mode)
+
+while true do
+    local data = readline.readline("")
+    if data ~= ffi.NULL then
+        local str = ffi.string(data)
+        f:write(str .. "\n")
+    else
+        break
+    end
+end
+
+f:close()

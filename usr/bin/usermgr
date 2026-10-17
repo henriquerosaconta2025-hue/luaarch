@@ -1,0 +1,145 @@
+#!/usr/bin/env -S suluajit
+local ffi = require("ffi")
+ffi.cdef[[
+    int seteuid(unsigned int euid);
+    int setegid(unsigned int egid);
+    int setuid(unsigned int uid);
+    int setgid(unsigned int gid);
+    int setresuid(unsigned int, unsigned int, unsigned int);
+    int setresgid(unsigned int, unsigned int, unsigned int);
+    int execvp(const char *file, char *const argv[]);
+    int setenv(const char *name, const char *value, int overwrite);
+    int crypto_pwhash_str(char out[128], const char *passwd, unsigned long long passwdlen, unsigned long long opslimit, size_t memlimit);
+    int crypto_pwhash_str_verify(const char passwd[128], const char *passwd, unsigned long long passwdlen);
+    int sodium_init(void);
+    char *crypt(const char *key, const char *salt);
+    int perror(const char* s);
+]]
+local mode = arg[1]
+local sodium = ffi.load("libsodium.so.26.4.0")
+local crypt = ffi.load("libcrypt.so")
+sodium.sodium_init()
+
+function ask(msg)
+    io.write(msg); io.flush()
+    local data = io.read("*l")
+    return data
+end
+
+if mode == "generate" then
+    local algorit = arg[2]
+    if algorit == "sha" then
+        local char = crypt.crypt(arg[3], arg[4])
+        if char ~= ffi.NULL then
+            print(ffi.string(char))
+        else
+            print("error generating hash")
+        end
+    end
+
+    if algorit == "argon" then
+        local out = ffi.new("char[128]")
+        local password = arg[3]
+        local ret = sodium.crypto_pwhash_str(out, password, #password, 3, tonumber(arg[4]))
+        if ret == 0 then
+            print(ffi.string(out))
+        else
+            print("error generating hash")
+        end
+    end
+end
+
+if mode == "list" then
+    local users = 0
+    local f = io.open("/etc/users", "r")
+    if f then
+        local data = f:read("*a")
+        for line in data:gmatch("[^\r\n]+") do
+            local user, hash, uid, gid, shell = line:match("(%S+)%s+(%S+)%s+(%d+)%s+(%d+)%s+(%S+)")
+            if user and hash and uid and gid and shell then
+                print(user .. " " .. uid .. ":" .. gid)
+                users = users + 1
+            end
+        end
+        f:close()
+        print("Total of " .. users .. " users")
+    end
+end
+
+if mode == "add" then
+    local user = ask("user name: ")
+    local password = ask("password: ")
+    local uid, gid = tonumber(ask("uid: ")), tonumber(ask("gid: "))
+    local shell = ask("shell: ")
+    local users = io.open("/etc/users", "a")
+
+    if users then
+        local out = ffi.new("char[128]")
+        local ret = sodium.crypto_pwhash_str(out, password, #password, 3, 33554432)
+        if ret == 0 then
+            users:write(string.format("%s %s %d %d %s\n", user, ffi.string(out), uid, gid, shell))
+        else
+            print("error generating hash")
+        end
+    end
+
+    return
+end
+
+if mode == "del" then
+    local users = io.open("/etc/users", "r")
+    if users then
+        local data = users:read("*a")
+        local alldata = ""
+        for line in data:gmatch("[^\r\n]+") do
+            local user, hash, useruid, usergid, usershell = line:match("(%S+)%s+(%S+)%s+(%d+)%s+(%d+)%s+(%S+)")
+            if user ~= arg[2] then
+                alldata = alldata .. line
+                break
+            end
+        end
+        users:close()
+        users = io.open("/etc/users", "w")
+        if users then
+            users:write(alldata .. "\n")
+            users:close()
+        end
+    end
+end
+
+if mode == "login" then
+    local username = ask("user: ")
+    local password = ask("password: ")
+    local uid, gid = -1, -1
+    local shell
+    do
+        local f = io.open("/etc/users", "r")
+        if f then
+            local data = f:read("*a")
+            for line in data:gmatch("[^\r\n]+") do
+                local user, hash, useruid, usergid, usershell = line:match("(%S+)%s+(%S+)%s+(%d+)%s+(%d+)%s+(%S+)")
+                if user == username then
+                    uid = tonumber(useruid)
+                    gid = tonumber(usergid)
+                    shell = usershell
+                    local ret = sodium.crypto_pwhash_str_verify(hash, password, #password)
+                    if ret ~= 0 then
+                        print("incorrect password")
+                        return
+                    end
+                end
+            end
+        end
+    end
+
+    if uid ~= -1 and gid ~= -1 and shell then
+        if ffi.C.setresgid(gid, gid, gid) == -1 then ffi.C.perror("setresgid") return end
+        if ffi.C.setresuid(uid, uid, uid) == -1 then ffi.C.perror("setresuid") return end
+        local argv = ffi.new("char*[2]")
+        argv[0] = ffi.cast("char*", "loginshell")
+        argv[1] = ffi.NULL
+        if ffi.C.execvp(shell, argv) == -1 then ffi.C.perror("execvp") return end
+    else
+        print("user not found")
+    end
+end

@@ -1,0 +1,44 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+ffi.cdef[[
+int open(const char *pathname, int flags, ...);
+long read(int fd, void *buf, unsigned long count);
+int close(int fd);
+]]
+
+local fd = ffi.C.open("/dev/kmsg", 2048)
+
+if fd < 0 then
+    print("kmsg open fail")
+    return
+end
+
+local buf = ffi.new("char[8192]")
+
+while true do
+    local readed = ffi.C.read(fd, buf, 8191)
+
+    if readed < 0 then
+        break
+    end
+
+    local line = ffi.string(buf, readed)
+
+    local facility, level, seq, flags, msg = line:match("(%d+),(%d+),(%d+),(%S+);(.+)")
+    if facility then
+        facility = tonumber(facility)
+        if facility == 3 then io.write("\27[31m") end
+        if facility == 4 then io.write("\27[33m") end
+        if facility == 6 then io.write("\27[34m") end
+        if facility == 5 then io.write("\27[32m") end
+        if facility == 7 then io.write("\27[36m") end
+        if facility == 1 then io.write("\27[41m") end
+        if facility == 0 then io.write("\27[47m[EMERG] ") end
+        if facility == 11 then io.write("[FTP] ") end
+        if facility == 12 then io.write("[NTP] ") end
+
+        io.write("[" .. seq .. "] " .. msg .. "\27[0m")
+    end
+    io.flush()
+end

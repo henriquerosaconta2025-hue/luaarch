@@ -1,0 +1,33 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+ffi.cdef[[
+   int open(const char* file, int mode);
+   int login_tty(int fd);
+   int execl(const char* path, ...);
+   char *ttyname(int fd);
+   char* strerror(int err);
+]]
+
+if not arg[1] then
+   print("usage: <ttyname or -n>")
+   return
+end
+
+if arg[1] == "-n" then
+    local res = ffi.C.ttyname(tonumber(arg[2]) or 0)
+    if res ~= ffi.NULL then
+        print(ffi.string(res))
+    else
+        print("could not get name of the tty.")
+    end
+    return
+end
+
+local tty = ffi.C.open(arg[1], 0)
+if ffi.C.login_tty(tty) == -1 then
+    print("failed to enter on tty " .. arg[1] .. ": " .. ffi.string(ffi.C.strerror(ffi.errno())))
+    return
+end
+
+ffi.C.execl(arg[2], ffi.cast("char*", arg[2]), ffi.NULL)

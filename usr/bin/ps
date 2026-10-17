@@ -1,0 +1,116 @@
+#!/usr/bin/env -S luajit
+
+if not arg[1] then
+   print("usage: s = sched param, n = nice (combine both options to get sched param state and nice)")
+   print("usage: set <action>")
+   print("usage: set schedpolicy <pid> <policy (SCHED_OTHER, SCHED_FIFO, ...)> <priority>")
+   print("usage: set nice <pid> <newpriority>")
+   return
+end
+
+local files = require("luajit_replit.files")
+local ffi = require("ffi")
+local dir = files.opendir("/proc")
+
+ffi.cdef[[
+   typedef struct {
+    int sched_priority;
+   } sched_param;
+
+   int sched_setscheduler(int pid, int policy, const sched_param *param);
+   int sched_getscheduler(int pid);
+   int setpriority(int which, unsigned int who, int prio);
+   int getpriority(int which, unsigned int pid);
+   int perror(const char* msg);
+]]
+
+local schedpolicies = {
+    [0] = "SCHED_OTHER",
+    [1] = "SCHED_FIFO",
+    [2] = "SCHED_RR",
+    [3] = "SCHED_BATCH",
+    [5] = "SCHED_IDLE",
+    [6] = "SCHED_DEADLINE"
+}
+
+local numscheds = {
+    ["SCHED_OTHER"] = 0,
+    ["SCHED_FIFO"] = 1,
+    ["SCHED_RR"] = 2,
+    ["SCHED_BATCH"] = 3,
+    ["SCHED_IDLE"] = 5,
+    ["SCHED_DEADLINE"] = 6
+}
+
+if dir == ffi.NULL then return end
+
+function readfile(path)
+    local f = io.open(path, "r")
+    if not f then return "" end
+
+    local chunks = {}
+
+    while true do
+        local chunk = f:read(4096)
+        if not chunk then break end
+        chunks[#chunks + 1] = chunk
+    end
+
+    f:close()
+    return table.concat(chunks)
+end
+
+function getcamp(str, camp)
+    local val = str:match(camp .. ":%s+(%S+)")
+    return val
+end
+
+if arg[1] == "set" then
+    local action = arg[2]
+    if action == "schedpolicy" then
+        local pid = tonumber(arg[3])
+        local policy = arg[4]
+        local prio = tonumber(arg[5])
+        local schedparam = ffi.new("sched_param")
+        schedparam.sched_priority = prio
+        if ffi.C.sched_setscheduler(pid, (numscheds[policy] or tonumber(policy)), schedparam) == -1 then ffi.C.perror("sched_setscheduler") end
+    end
+
+    if action == "nice" then
+        local pid = tonumber(arg[3])
+        local prio = tonumber(arg[4])
+        if ffi.C.setpriority(0, pid, prio) == -1 then ffi.C.perror("setpriority") end
+    end
+
+    return
+end
+
+local procs = 0
+
+while true do
+    local entry = files.readdir(dir)
+    if entry == ffi.NULL then break end
+    local pid = tonumber(ffi.string(entry.d_name))
+    if pid then
+        local comm = readfile("/proc/" .. pid .. "/comm"):gsub("\n", "")
+        local status = readfile("/proc/" .. pid .. "/status")
+        if comm and status then
+            local state = getcamp(status, "State")
+            io.write(pid .. " " .. comm .. " " .. tostring(state) .. " ")
+            if arg[1] then
+                if arg[1]:find("s") then
+                    local policy = ffi.C.sched_getscheduler(pid)
+                    io.write((schedpolicies[policy] or policy) .. " ")
+                end
+                if arg[1]:find("n") then
+                    io.write(ffi.C.getpriority(0, pid) .. " ")
+                end
+            end
+            procs = procs + 1
+            io.write("\n")
+            io.flush()
+        end
+    end
+end
+
+print("\nTotal of " .. procs .. " processes")

@@ -1,0 +1,179 @@
+#!/usr/bin/env -S luajit
+
+if not arg[1] then
+   print("HTTPS client")
+   print("usage: <site> <port> <path>")
+   return
+end
+
+local net = require("luajit_replit.net")
+local sslnet = require("luajit_replit.sslnet")
+local ffi = require("ffi")
+local ctx = sslnet.newctx()
+local cipher = "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256"
+
+ffi.cdef[[
+typedef void (*sighandler_t)(int);
+sighandler_t signal(int sig, sighandler_t func);
+]]
+
+print("* using cipher: " .. cipher)
+print(" * Using Alpn: http/1.1, http/1.0")
+
+sslnet.clientAlpn(ctx, "\x08http/1.1\x08http/1.0")
+sslnet.cipher(ctx, cipher)
+sslnet.API.SSL_CTX_load_verify_locations(ctx, "/etc/ssl/certs/ca-certificates.crt", ffi.null)
+sslnet.API.SSL_CTX_set_default_verify_paths(ctx)
+sslnet.API.SSL_CTX_set_verify(ctx, 1, ffi.NULL)
+
+local sobj = sslnet.newctxobj(ctx)
+
+local tcp = net.tcp()
+local fd = tcp:fd()
+local site = arg[1]
+local port = tonumber(arg[3]) or 443
+local path = arg[2] or "/"
+function endclean()
+    sslnet.sfree(sobj, ctx)
+    tcp:close()
+end
+
+if not site then
+    print("* missing arg 1")
+    sslnet.sfree(sobj, ctx)
+    tcp:close()
+    return
+end
+
+tcp:noblock()
+
+local req = {
+    "GET / HTTP/1.1\r\n",
+    "Host: " .. site .. "\r\n",
+    "User-Agent: curl\r\n",
+    "Connection: close\r\n",
+    "\r\n"
+}
+
+_G.__sigpipeh = ffi.cast("sighandler_t", function ()
+    print("CRITICAL: received SIGPIPE!")
+    endclean()
+    os.exit()
+end)
+
+ffi.C.signal(13, _G.__sigpipeh)
+
+print("* Connecting to " .. site .. ":" .. port)
+local resolved = net.dresolve(site, 0)
+
+if not resolved then
+    print("* failed to DNS " .. site)
+    endclean()
+    return
+end
+
+if tcp:connect(resolved, port) == -1 then
+    if net.geterror() ~= 115 then
+       print("* Connection failed: " .. net.geterrorstr())
+       endclean()
+       return
+    end
+end
+
+do
+    local waitdone = net.poll(fd, 0x4, 5000)
+    if waitdone == 0 then print("* Connect timeout!") endclean() return end
+    if waitdone == -1 then print("* Connect Poll error!") endclean() return end
+
+    if not net.isConnected(fd) then print("Connection failed! bruh i dont trust the kernel anymore with poll!") endclean() return end
+end
+
+print(" * Server IP: " .. resolved)
+print("* Connected!")
+
+sslnet.sni(sobj, site)
+sslnet.setfd(sobj, fd)
+
+local sret = 0
+local attempts = 10
+
+while attempts > 1 do
+    sret = sslnet.sconnect(sobj)
+    if sret == 1 then break end
+    local err = sslnet.geterror2(sobj, sret)
+    local mask = 0x0
+
+    if err == 5 then  print("* SSL connection closed") break end
+    if err == 2 then  mask = 0x1 end
+    if err == 3 then  mask = 0x4 end
+    local pollret = net.poll(fd, mask, 1000)
+
+    if pollret == 0 then print("* timeout! trying again") end
+    if pollret == -1 then print("* poll error! trying again") end
+
+    attempts = attempts - 1
+end
+
+if sret == 1 then
+    print("* SSL Connection successfully")
+    local issuerbuf = ffi.new("char[4096]")
+    local subjectbuf = ffi.new("char[4096]")
+    local cert = sslnet.API.SSL_get1_peer_certificate(sobj)
+    local selectedalpn = sslnet.get0alpn(sobj)
+
+    if cert ~= ffi.NULL then
+        local issuer = sslnet.API.X509_get_issuer_name(cert)
+        local subject = sslnet.API.X509_get_subject_name(cert)
+        local tlsver = sslnet.API.SSL_get_version(sobj)
+        local verifyres = sslnet.API.SSL_get_verify_result(sobj)
+
+        sslnet.API.X509_NAME_oneline(issuer, issuerbuf, 4095)
+        sslnet.API.X509_NAME_oneline(subject, subjectbuf, 4095)
+
+        print("* Infos: ")
+        print(" * " ..ffi.string(issuerbuf))
+        print(" * " .. ffi.string(subjectbuf))
+        print(" * " .. ffi.string(tlsver))
+        print(" * " .. ffi.string(sslnet.API.X509_verify_cert_error_string(verifyres)))
+        sslnet.API.X509_free(cert)
+    end
+
+    if selectedalpn then
+        print("* Accepted ALPN: " .. selectedalpn)
+    else
+        print("* ALPN negociation failed, using http/1.1")
+        selectedalpn = "http/1.1"
+    end
+
+    req[1] = "GET " .. path .. " " .. selectedalpn:upper() .. "\r\n"
+    local reqtext = table.concat(req)
+
+    print("* Sending: ")
+    print(reqtext)
+    print("* " .. #reqtext .. " Bytes")
+
+    local sended = sslnet.swrite(sobj, reqtext)
+    if sended > 0 then
+        print("* Sended: " .. sended .. " Bytes")
+
+        while true do
+            local chunk, closenotify = sslnet.sread(sobj, 4096)
+            if closenotify then break end
+            if not net.isConnected(fd) then print("* Oops! i didnt expected to close this connection in that way!") end
+
+            if chunk then
+                print(chunk)
+            end
+
+            local pollret = net.poll(fd, 0x1, 5000)
+
+            if pollret < 1 then print("timeout!") break end
+        end
+    end
+
+    sslnet.sshutdown(sobj)
+else
+    print("* ERROR: SSL connection failed: " .. sslnet.geterror())
+end
+
+endclean()

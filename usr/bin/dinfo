@@ -1,0 +1,116 @@
+#!/usr/bin/env -S luajit
+
+local ffi = require("ffi")
+local C = ffi.C
+local bit = require("bit")
+
+ffi.cdef[[
+typedef struct {
+    unsigned long f_type;
+    unsigned long f_bsize;
+    unsigned long f_blocks;
+    unsigned long f_bfree;
+    unsigned long f_bavail;
+    unsigned long f_files;
+    unsigned long f_ffree;
+    unsigned long f_fsid;
+    unsigned long f_namelen;
+    unsigned long f_frsize;
+    unsigned long f_flags;
+    unsigned long f_spare[4];
+} statfs_t;
+
+int statfs(const char *path, statfs_t *buf);
+char* strerror(int);
+]]
+
+local buf = ffi.new("statfs_t")
+local ret = C.statfs(arg[1] or "/", buf)
+local fstypes = {
+    [0xEF53] = "EXT (2/3/4)",
+    [0x5346544E] = "NTFS", 
+    [0x4D44] = "FAT",
+    [0x01021994] = "TMPFS",
+    [0x9FA0] = "PROC",
+    [0x62656572] = "SYSFS",
+    [16914839] = "9P"
+}
+if ret ~= 0 then
+    print("dinfo: " .. ffi.string(ffi.C.strerror(ffi.errno())))
+    print("dinfo: statfs failed")
+    return
+end
+
+local bsize = tonumber(buf.f_frsize)
+local total = tonumber(buf.f_blocks * bsize)
+local free  = tonumber(buf.f_bfree * bsize)
+local avail = tonumber(buf.f_bavail * bsize)
+local flags = tonumber(buf.f_flags)
+
+local used = total - free
+print("Info about " .. (arg[1] or "/"))
+print("Basic:")
+print(" Type          : " .. (fstypes[tonumber(buf.f_type)] or "idk man"))
+print(" Frag Size     : " .. tonumber(bsize))
+print(" Total         : " .. tonumber(total) .. " (" .. math.floor(total / 1024^3) .. "GB)")
+print(" Used          : " .. tonumber(used) .. " (" .. math.floor(used / 1024^3) .. "GB)")
+print(" Avai          : " .. tonumber(avail) .. " (" .. math.floor(avail / 1024^3) .. "GB)")
+print(" Free          : " .. tonumber(free) .. " (" .. math.floor(free / 1024^3) .. "GB)")
+print("Expert:")
+print(" Identifier    : " .. tostring(buf.f_fsid))
+print(" Blocks        : " .. tonumber(buf.f_blocks))
+print(" Avai Inodes   : " .. tonumber(buf.f_ffree))
+print(" FS Inodes     : " .. tonumber(buf.f_files))
+print(" Max name size : " .. tonumber(buf.f_namelen))
+io.write(" Mount Flags   : ")
+
+if bit.band(flags, 1) ~= 0 then
+   io.write("Read-Only, ")
+end
+
+if bit.band(flags, 2) ~= 0 then
+   io.write("No-Suid, ")
+end
+
+if bit.band(flags, 4) ~= 0 then
+   io.write("No-Dev, ")
+end
+
+if bit.band(flags, 8) ~= 0 then
+   io.write("No-Exec, ")
+end
+
+if bit.band(flags, 16) ~= 0 then
+   io.write("Syncronous, ")
+end
+
+if bit.band(flags, 32) ~= 0 then
+   io.write("Remount, ")
+end
+
+if bit.band(flags, 64) ~= 0 then
+   io.write("No-Atime, ")
+end
+
+if bit.band(flags, 128) ~= 0 then
+   io.write("Dirsync, ")
+end
+
+if bit.band(flags, 256) ~= 0 then
+   io.write("Bind, ")
+end
+
+if bit.band(flags, 512) ~= 0 then
+   io.write("Move, ")
+end
+
+if bit.band(flags, 1024) ~= 0 then
+   io.write("Rec, ")
+end
+
+if bit.band(flags, 2048) ~= 0 then
+   io.write("Silent, ")
+end
+
+io.write("\n")
+io.flush()

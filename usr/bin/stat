@@ -1,0 +1,42 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+ffi.cdef[[
+typedef unsigned int mode_t;
+
+struct stat {
+    unsigned long st_dev;
+    unsigned long st_ino;
+    unsigned long st_nlink;
+    unsigned int st_mode;
+    unsigned int st_uid;
+    unsigned int st_gid;
+    unsigned long st_rdev;
+    long st_size;
+    long st_blksize;
+    long st_blocks;
+    long st_atime;
+    long st_atime_nsec;
+    long st_mtime;
+    long st_mtime_nsec;
+    long st_ctime;
+    long st_ctime_nsec;
+    long __unused[3];
+};
+
+int stat(const char *path, struct stat *buf);
+char* strerror(int err);
+]]
+
+local s = ffi.new("struct stat")
+if ffi.C.stat(arg[1], s) == 0 then
+    print("mode   : " .. tonumber(s.st_mode))
+    print("size   : " .. tonumber(s.st_size))
+    print("blocks : " .. tonumber(s.st_blocks))
+    print("ino    : " .. tonumber(s.st_ino))
+    print("nlink  : " .. tonumber(s.st_nlink))
+    print("dev    : " .. tonumber(s.st_dev))
+    print("rdev   : " .. tonumber(s.st_rdev))
+else
+    print(ffi.string(ffi.C.strerror(ffi.errno())))
+end

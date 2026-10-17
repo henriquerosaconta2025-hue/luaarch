@@ -1,0 +1,29 @@
+#!/usr/bin/env -S luajit
+
+local ffi = require("ffi")
+
+ffi.cdef([[
+    long syscall(int number, int fd, const char *param_values, int flags);    
+    int open(const char *pathname, int flags);
+    int close(int fd);
+    char* strerror(int errnum);
+]])
+
+if not arg[1] then
+   print(arg[0] .. ": missing operand")
+   return
+end
+
+local SYS_finit_module = 313
+local fd = ffi.C.open(arg[1], 0)
+if fd == -1 then
+    print(arg[0] .. ": cannot open module " .. arg[1] .. ": " .. ffi.string(ffi.C.strerror(ffi.errno())))
+    return
+end
+local result = ffi.C.syscall(SYS_finit_module, fd, (arg[2] or ""), tonumber(arg[3] or "0"))
+if result == -1 then
+    print(arg[0] .. ": kernel injection phase: " .. ffi.string(ffi.C.strerror(ffi.errno())))
+else
+    print("success")
+end
+ffi.C.close(fd)

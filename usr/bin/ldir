@@ -1,0 +1,34 @@
+#!/usr/bin/env -S luajit
+local files = require("luajit_replit.files")
+local ffi = require("ffi")
+
+ffi.cdef[[
+  char* strerror(int err);
+]]
+
+local mode = arg[3] or true
+local dir = files.dir(arg[1] or ".")
+
+if not dir then
+    print(ffi.string(ffi.C.strerror(ffi.errno())))
+    return
+end
+
+local tosearch = arg[2] or ""
+local find = string.find
+local searched = 0
+
+for file in dir:lines() do
+    if mode == "false" then
+        if not find(file.file, tosearch) then
+           print(file.file)
+        end
+    else
+        if find(file.file, tosearch) then
+           print(file.file)
+        end
+    end
+    searched = searched + 1
+end
+
+print("\nDir total indexes : " .. #dir.dir)

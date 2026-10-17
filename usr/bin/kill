@@ -1,0 +1,23 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+local pid = tonumber(arg[1])
+local sig = tonumber(arg[2])
+
+if not pid and not sig then
+   print("usage: <pid> <sig>")
+   return
+end
+
+ffi.cdef[[
+  int kill(int pid, int sig);
+  char* strerror(int err);
+]]
+
+local killed = ffi.C.kill(pid, sig)
+
+if killed ~= 0 then
+    print(ffi.string(ffi.C.strerror(ffi.errno())))
+else
+    print("success")
+end

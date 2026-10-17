@@ -1,0 +1,173 @@
+#!/luajit
+local ffi = require("ffi")
+
+ffi.cdef[[
+  int syscall(int syscall, ...);
+  int open(const char* file, int perms);
+  int close(int fd);
+  char* strerror(int errno);
+
+  struct winsize {
+    unsigned short ws_row;
+    unsigned short ws_col;
+    unsigned short ws_xpixel;
+    unsigned short ws_ypixel;
+  };
+
+  struct sockaddr {
+    unsigned short sa_family;
+    char sa_data[14];
+  };
+
+  struct ifreq {
+    char ifr_name[16];
+
+    union {
+        struct sockaddr ifr_addr;
+        struct sockaddr ifr_dstaddr;
+        struct sockaddr ifr_broadaddr;
+        struct sockaddr ifr_netmask;
+        struct sockaddr ifr_hwaddr;
+        short ifr_flags;
+        int ifr_ifindex;
+        int ifr_metric;
+        int ifr_mtu;
+        int ifr_map;
+        char ifr_slave[16];
+        char ifr_newname[16];
+        void *ifr_data;
+    };
+  };
+
+  struct rtentry {
+    unsigned long rt_pad1;
+    struct sockaddr rt_dst;
+    struct sockaddr rt_gateway;
+    struct sockaddr rt_genmask;
+    unsigned short rt_flags;
+    short rt_pad2;
+    unsigned long rt_pad3;
+    unsigned char rt_tos;
+    unsigned char rt_class;
+    short rt_pad4;
+    short rt_metric;
+    char *rt_dev;
+    unsigned long rt_mtu;
+    unsigned long rt_window;
+    unsigned short rt_irtt;
+  };
+
+  int ioctl(int fd, unsigned long request, ...);
+  int socket(int domain, int type, int protocol);
+  void perror(const char *s);
+  int chmod(const char* file, int perms);
+]]
+
+function loadmod(name)
+    local fd = ffi.C.open(name, 0)
+    local ret = ffi.C.syscall(313, ffi.cast("int", fd), ffi.cast("char*", ""), ffi.cast("int", 0))
+    ffi.C.close(fd)
+
+    if ret == 0 then
+        return true
+    else
+        return ffi.string(ffi.C.strerror(ffi.errno()))
+    end
+end
+
+print("[oninit] setting up /luajit perm as 0755")
+if ffi.C.chmod("/luajit", tonumber("0755", 8)) == -1 then
+    ffi.C.perror(" chmod")
+end
+
+print("[oninit] setting up /suluajit perm as 4755")
+if ffi.C.chmod("/suluajit", tonumber("4755", 8)) == -1 then
+    ffi.C.perror(" chmod")
+end
+
+print("[oninit] loading network drivers...")
+print(" loading failover: " .. tostring(loadmod("/mods/failover.ko")))
+print(" loading net_failover: " .. tostring(loadmod("/mods/net_failover.ko")))
+print(" loading virtio_net: " .. tostring(loadmod("/mods/virtio_net.ko")))
+
+print("\n[oninit] loading other drivers...")
+print(" loading virtio_mem: " .. tostring(loadmod("/mods/virtio_mem.ko")))
+print(" loading virtio_mmio: " .. tostring(loadmod("/mods/virtio_mmio.ko")))
+print(" loading virtio_balloon: " .. tostring(loadmod("/mods/virtio_balloon.ko")))
+print(" loading bochs: " .. tostring(loadmod("/mods/bochs.ko")))
+
+local master = ffi.C.socket(2, 2, 0)
+
+do
+    local configs = io.open("/etc/net.conf", "r")
+    if configs then
+        local data = configs:read("*a")
+        for line in data:gmatch("[^\r\n]+") do
+            local interface, action, value = line:match("(%S+)%s+(%S+)%s+(%S+)")
+            if interface and action and value then
+                if action == "flags" then
+                    print("[oninit][/etc/net.conf]: setting up " .. interface .. " with flags " .. value)
+                    local ifr = ffi.new("struct ifreq")
+                    ffi.copy(ifr.ifr_name, interface)
+                    ifr.ifr_flags = tonumber(value)
+                    if ffi.C.ioctl(master, 0x8914, ifr) == -1 then ffi.C.perror(" ioctl") end
+                end
+
+                if action == "addr" then
+                    print("[oninit][/etc/net.conf]: setting up " .. interface .. " ip as " .. value)
+                    local ifr = ffi.new("struct ifreq")
+                    local sadatapointer = 0
+                    ffi.copy(ifr.ifr_name, interface)
+                    ifr.ifr_addr.sa_family = 2
+                    for ipdigit in value:gmatch("(%d+)") do
+                        if sadatapointer >= 4 then break end
+                        ifr.ifr_addr.sa_data[sadatapointer + 2] = tonumber(ipdigit)
+                        sadatapointer = sadatapointer + 1
+                    end
+                    if ffi.C.ioctl(master, 0x8916, ifr) == -1 then ffi.C.perror(" ioctl") end
+                end
+
+                if action == "gateway" then
+                    print("[oninit][/etc/net.conf]: setting up " .. interface .. " gateway as " .. value)
+                    local route = ffi.new("struct rtentry")
+                    local sadatapointer = 0
+                    route.rt_dev = ffi.new("char[16]", interface)
+                    route.rt_gateway.sa_family = 2
+                    route.rt_genmask.sa_family = 2
+                    route.rt_dst.sa_family = 2
+                    route.rt_flags = 3
+
+                    for ipdigit in value:gmatch("(%d+)") do
+                        if sadatapointer >= 4 then break end
+                        route.rt_gateway.sa_data[sadatapointer + 2] = tonumber(ipdigit)
+                        sadatapointer = sadatapointer + 1
+                    end
+
+                    if ffi.C.ioctl(master, 0x890B, route) == -1 then ffi.C.perror(" ioctl") end
+                end
+            end
+        end
+    end
+end
+
+do
+    local termsize = io.open("/etc/termsize.conf", "r")
+    if termsize then
+        local data = termsize:read("*l")
+        local row, col = data:match("(%d+)x(%d+)")
+        if row and col then
+            print("[oninit][/etc/termsize.conf] setting up terminal size as " .. row .. "x" .. col)
+            local winsize = ffi.new("struct winsize")
+            winsize.ws_row = tonumber(row)
+            winsize.ws_col = tonumber(col)
+            if ffi.C.ioctl(0, 0x5414, winsize) == -1 then
+                print("ioctl: " .. ffi.string(ffi.C.strerror(ffi.errno())))
+            end
+        end
+        termsize:close()
+    end
+end
+
+ffi.C.close(master)
+
+print("Done! now you can use the system normally. (configure other things using luaip and temi)")

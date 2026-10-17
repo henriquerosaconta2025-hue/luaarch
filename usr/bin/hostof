@@ -1,0 +1,11 @@
+#!/usr/bin/env -S luajit
+
+local net = require("luajit_replit.net")
+if tostring(arg[1]):match("^%d+%.%d+%.%d+%.%d+$") then
+  local resolved, ret = net.ipresolve(arg[1])
+
+  print(resolved)
+  return
+end
+print(net.dresolve(arg[1], tonumber(arg[2]) or 0))
+

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+echo "compiling init..."
+
+gcc -static -Os -s -o luaarch/boot/init luinit.c
+
+cd luaarch/boot
+echo init | cpio -H newc -o > iniramfs.cpio
+gzip -9 -f iniramfs.cpio
+echo "success"

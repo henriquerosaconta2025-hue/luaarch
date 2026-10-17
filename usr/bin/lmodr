@@ -1,0 +1,25 @@
+#!/usr/bin/env -S luajit
+
+local ffi = require("ffi")
+
+ffi.cdef([[
+    long syscall(long number, const char *name, unsigned int flags); // delete_module
+    char* strerror(int errnum);
+]])
+
+if not arg[1] then
+   print(arg[0] .. ": missing operand")
+   return
+end
+
+local name = arg[1]
+local flags = tonumber(arg[2]) or 0
+print("deleting module " .. name .. " with flags " .. tostring(arg[2]))
+local ret = ffi.C.syscall(176, name, flags) -- SYS_delete_module
+
+if ret == -1 then
+    local err = ffi.errno()
+    print(string.format("Failed to delete module '%s': %s", name, ffi.string(ffi.C.strerror(err))))
+else
+    print(string.format("Module '%s' deleted successfully.", name))
+end

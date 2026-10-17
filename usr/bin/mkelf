@@ -1,0 +1,438 @@
+#!/usr/bin/env -S luajit
+
+local ffi = require("ffi")
+
+if not arg[1] then
+    print("missing input file and output file")
+    return
+end
+
+function askuser(text)
+    io.write(text); io.flush()
+    local input = io.read("*l")
+    return input
+end
+
+local codesize = tonumber(askuser("code size: "))
+
+if codesize == nil then codesize = 3000 end
+
+ffi.cdef(string.format([[
+typedef struct {
+    unsigned char e_ident[16];
+    uint16_t      e_type;
+    uint16_t      e_machine;
+    uint32_t      e_version;
+    uint64_t      e_entry;
+    uint64_t      e_phoff;
+    uint64_t      e_shoff;
+    uint32_t      e_flags;
+    uint16_t      e_ehsize;
+    uint16_t      e_phentsize;
+    uint16_t      e_phnum;
+    uint16_t      e_shentsize;
+    uint16_t      e_shnum;
+    uint16_t      e_shstrndx;
+} Elf64_Ehdr;
+
+typedef struct {
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
+} Elf64_Phdr;
+
+typedef struct {
+    Elf64_Ehdr ehdr;
+    Elf64_Phdr phdr;
+    unsigned char code[%s];
+} MyElf;
+]], codesize))
+
+local ehdr = ffi.new("Elf64_Ehdr")
+local phdr = ffi.new("Elf64_Phdr")
+
+function tohex(n)
+    local hex = string.format("0x%X", tonumber(n))
+    return hex
+end
+
+if arg[1] == "-info" then
+    local f = io.open(arg[2], "rb")
+    local bin = f:read("*a")
+    f:close()
+
+    local decoded = ffi.cast("MyElf*", ffi.cast("char*", bin))
+    local eh = decoded.ehdr
+    local ph = decoded.phdr
+
+    print("Machine type : " .. tohex(eh.e_machine))
+    print("Type         : " .. tohex(eh.e_type))
+    print("Entry Point  : " .. tohex(eh.e_entry))
+    print("Version      : " .. tohex(eh.e_version))
+
+    print("\nFlags        : " .. tohex(ph.p_flags))
+    print("Mem Size     : " .. tohex(ph.p_memsz))
+    print("File Size    : " .. tohex(ph.p_filesz))
+    return
+end
+
+ehdr.e_ident[0] = 0x7f
+ehdr.e_ident[1] = string.byte("E")
+ehdr.e_ident[2] = string.byte("L")
+ehdr.e_ident[3] = string.byte("F")
+
+ehdr.e_ident[4] = 2
+ehdr.e_ident[5] = 1
+ehdr.e_ident[6] = 1
+
+ehdr.e_type = 2
+ehdr.e_machine = 0x3e
+ehdr.e_version = 1
+
+ehdr.e_entry = 0x400078
+ehdr.e_phoff = 64
+ehdr.e_ehsize = 64
+ehdr.e_phentsize = 56
+ehdr.e_phnum = 1
+
+phdr.p_type = 1
+phdr.p_flags = 7
+phdr.p_offset = 0
+phdr.p_vaddr = 0x400000
+phdr.p_paddr = 0x400000
+
+phdr.p_filesz = tonumber(askuser("filesz: "))
+phdr.p_memsz = tonumber(askuser("memsz: "))
+
+local myelf = ffi.new("MyElf")
+
+myelf.ehdr = ehdr
+myelf.phdr = phdr
+
+local codepointer = 0
+
+function insertins(ins)
+    myelf.code[codepointer] = tonumber(ins)
+    codepointer = codepointer + 1
+end
+
+function emit32(value)
+    for i = 0, 3 do
+        insertins(math.floor(value / 256^i) % 256)
+    end
+end
+
+function emit64(value)
+    for i = 0, 7 do
+        insertins(math.floor(value / 256^i) % 256)
+    end
+end
+
+function emitat64(pos, value)
+    for i = 0, 7 do
+        myelf.code[pos + i] =
+            math.floor(value / 256^i) % 256
+    end
+end
+
+function emitat8(pos, value)
+    myelf.code[pos] = value % 0x100
+    codepointer = codepointer + 1
+end
+
+local immregs = {
+    rax = 0,
+    rcx = 1,
+    rdx = 2,
+    rbx = 3,
+    rsp = 4,
+    rbp = 5,
+    rsi = 6,
+    rdi = 7,
+    al = 0,
+}
+
+function immmov(reg, val)
+    local regval = immregs[reg]
+    insertins(0x48)
+    insertins(0xC7)
+    insertins(0xC0 + tonumber(regval))
+    emit32(tonumber(val))
+end
+
+function syscall()
+    insertins(0x0F)
+    insertins(0x05)
+end
+
+function emitat(offset, value)
+    myelf.code[offset] = value
+end
+
+local strdatalabels = {
+    ["CODESTART"] = 0x400078,
+    ["CODEPOINT"] = codepointer
+}
+
+local defs = {}
+
+local syscalls = {
+    ["exit"] = function (args)
+        immmov("rax", 60)
+        immmov("rdi", tonumber(args[2]))
+        syscall()
+    end,
+    ["write"] = function (args)
+        immmov("rax", 1)
+        immmov("rdi", args[2])
+        immmov("rsi", strdatalabels[args[3]])
+        immmov("rdx", args[4])
+        syscall()
+    end,
+    ["read"] = function (args)
+        immmov("rax", 0)
+        immmov("rdi", args[2])
+        immmov("rsi", strdatalabels[args[3]])
+        immmov("rdx", args[4])
+        syscall()
+    end,
+    ["memwrite"] = function (args)
+        local label = args[2]
+        local offset = tonumber(args[3])
+        local value = tonumber(args[4])
+
+        local addr = strdatalabels[label] + offset
+
+        if tonumber(label) then addr = tonumber(offset) end
+
+        insertins(0xC6)
+        insertins(0x04)
+        insertins(0x25)
+
+        emit32(addr)
+        insertins(value)
+    end,
+    ["memread"] = function (args)
+        local label = args[2]
+        local offset = tonumber(args[3])
+        local reg = args[4]
+
+        local addr = strdatalabels[label] + offset
+        local regval = immregs[reg]
+
+        insertins(0x48)
+        insertins(0x0F)
+        insertins(0xB6)
+        insertins(0x04 + regval * 8)
+        insertins(0x25)
+
+        emit32(addr)
+    end
+}
+
+for line in io.lines(arg[1]) do
+    local opcode = line:match("(%S+)")
+    strdatalabels["CODEPOINT"] = codepointer
+    if opcode == "jmp" then
+        local _, move = line:match("(%S+)%s+(%S+)")
+        insertins(0xEB)
+        insertins(tonumber(move))
+    end
+
+    if opcode == "mov" then
+        local _, reg, value = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        local regval = immregs[reg]
+        if not regval then print("codepoint:" .. codepointer .. ": register " .. reg .. " not found"); return end
+        insertins(0x48)
+        insertins(0xC7)
+        insertins(0xC0 + regval)
+        if tonumber(value) then
+            emit32(tonumber(value))
+        else
+            if not strdatalabels[value] then print("\27[31mCompile error: label " .. value .. " not found\27[0m") os.exit() end
+            emit32(strdatalabels[value])
+        end
+    end
+
+    if opcode == "movr" then
+        local _, dst, src = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        local dstreg = immregs[dst]
+        local srcreg = immregs[src]
+        insertins(0x48)
+        insertins(0x89)
+
+        local modrm = bit.bor(0xC0, bit.lshift(srcreg, 3), dstreg)
+        insertins(modrm)
+    end
+
+    if opcode == ".define" then
+        local _, name, value = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        defs[name] = tonumber(value)
+    end
+
+    if opcode == "cmp" then
+        local _, reg, value = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        local regval = immregs[reg]
+        insertins(0x48)
+        insertins(0x81)
+        insertins(0xF8 + regval)
+        if tonumber(value) then
+            emit32(tonumber(value))
+        else
+            if not strdatalabels[value] then print("\27[31mCompile error: label " .. value .. " not found\27[0m") os.exit() end
+            emit32(strdatalabels[value])
+        end
+    end
+
+    if opcode == "emitat" then
+        local _, pos, value = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        emitat(tonumber(pos), tonumber(value))
+    end
+
+    if opcode == "emitat64" then
+        local _, pos, value = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        if tonumber(value) then
+            emitat64(tonumber(pos), tonumber(value))
+        else
+            if not strdatalabels[pos] then print("\27[31mCompile error: label " .. pos .. " not found\27[0m") os.exit() end
+            emitat64(tonumber(pos), strdatalabels[value])
+        end
+    end
+
+    if opcode == "emitat8" then
+        local _, pos, value = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        emitat8(tonumber(pos), tonumber(value))
+    end
+
+    if opcode == "absjmp" then
+        local _, pos = line:match("(%S+)%s+(%S+)")
+        insertins(0x48)
+        insertins(0xB8)
+        if tonumber(pos) then
+            emitat64(codepointer, tonumber(pos))
+        else
+            if not strdatalabels[pos] then print("\27[31mCompile error: label " .. pos .. " not found\27[0m") os.exit() end
+            emitat64(codepointer, strdatalabels[pos])
+        end
+        codepointer = codepointer + 8
+
+        insertins(0xFF)
+        insertins(0xE0)
+    end
+
+    if opcode == "strdata:" then
+        local _, pos, value, name = line:match("(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
+        for i = 1, #value do
+            local byte = value:sub(i, i)
+            emitat(pos + i - 1, string.byte(byte))
+        end
+        emitat(pos + #value, 0x0)
+        strdatalabels[name] = tonumber(0x400000 + 120 + tonumber(pos))
+    end
+
+    if opcode == "reserve:" then
+        local _, pos, value, name = line:match("(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
+        for i = 1, tonumber(value) - 1 do
+            emitat(pos + i, 0)
+        end
+        strdatalabels[name] = tonumber(0x400000 + 120 + tonumber(pos))
+    end
+
+    if opcode == "rep" then
+        local _, name = line:match("(%S+)%s+(%S+)")
+        if name == "stosb" then
+           insertins(0xF3)
+           insertins(0xAA)
+        end
+    end
+
+    if opcode == "emitat64:" then
+        local _, pos, value, name = line:match("(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
+        if tonumber(value) then
+            emitat64(tonumber(pos), tonumber(value))
+        else
+            emitat64(tonumber(pos), strdatalabels[value])
+        end
+        strdatalabels[name] = tonumber(0x400000 + 120 + tonumber(pos))
+    end
+
+    if opcode == ":checkpoint:" then
+        local _, name = line:match("(%S+)%s+(%S+)")
+        strdatalabels[name] = tonumber(0x400000 + 120 + tonumber(codepointer))
+    end
+
+    if opcode == "syscall" then
+        insertins(0x0F)
+        insertins(0x05)
+    end
+
+    if opcode == "immadd" then
+        local _, reg, data = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        local regval = immregs[reg]
+        insertins(0x48)
+        insertins(0x81)
+        insertins(regval)
+        insertins(tonumber(data))
+        insertins(0x0)
+        insertins(0x0)
+        insertins(0x0)
+    end
+
+    if opcode == "immsub" then
+        local _, reg, data = line:match("(%S+)%s+(%S+)%s+(%S+)")
+        local regval = immregs[reg]
+        insertins(0x48)
+        insertins(0x81)
+        insertins(0xE8 + regval)
+        insertins(tonumber(data))
+        insertins(0x0)
+        insertins(0x0)
+        insertins(0x0)
+    end
+
+    if opcode == "immmul" then
+        local _, reg = line:match("(%S+)%s+(%S+)")
+        local regval = immregs[reg]
+        insertins(0x48)
+        insertins(0xF7)
+        insertins(0xE0 + regval)
+    end
+
+    if opcode == "immdiv" then
+        local _, reg = line:match("(%S+)%s+(%S+)")
+        local regval = immregs[reg]
+        insertins(0x48)
+        insertins(0xF7)
+        insertins(0xF0 + regval)
+    end
+
+    if tonumber(line) and not defs[line] then
+       myelf.code[codepointer] = tonumber(line)
+       codepointer = codepointer + 1
+    end
+
+    if defs[opcode] then
+        insertins(defs[opcode])
+    end
+
+    if syscalls[opcode] then
+        local args = {}
+        for arg in line:gmatch("(%S+)") do
+            table.insert(args, arg)
+        end
+        syscalls[opcode](args)
+    end
+end
+
+print("\nCompilation done!")
+print("File size   : " .. ffi.sizeof(myelf))
+print("Entry point : " .. "0x400078\n")
+
+local f = io.open(arg[2], "wb")
+f:write(ffi.string(ffi.cast("const char *", myelf), ffi.sizeof(myelf)))
+f:close()

@@ -1,0 +1,18 @@
+#!/usr/bin/env -S luajit
+
+if not arg[1] then
+   print(io.read("*a"))
+   return
+end
+
+local file, err = io.open(arg[1], 'r')
+
+if not file then print(err) return end
+
+while true do
+   local chunk = file:read(4096)
+   if not chunk then break end
+   io.write(chunk)
+end
+
+file:close()

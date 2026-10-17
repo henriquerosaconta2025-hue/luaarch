@@ -1,0 +1,13 @@
+#!/usr/bin/bash
+
+qemu-system-x86_64 \
+    -kernel luaarch/boot/vmlinuz \
+    -initrd luaarch/boot/iniramfs.cpio.gz \
+    -append "console=tty0 loglevel=8 rdinit=/init /dev/tty0" \
+    -drive file=luaarch-rootfs.img,format=raw,if=virtio \
+    -netdev user,id=net0 \
+    -device virtio-net-pci,netdev=net0 \
+    -vga std \
+    -display gtk \
+    -smp 1,sockets=1,cores=1,threads=1 \
+    -m 1G

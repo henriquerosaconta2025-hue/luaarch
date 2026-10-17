@@ -1,0 +1,26 @@
+#!/usr/bin/env -S luajit
+
+local hexonly = arg[2] == "-x"
+
+function trashfor(str)
+    local newlinecounter = 0
+    str:gsub(".", function (i)
+        newlinecounter = newlinecounter + 1
+        if newlinecounter % 16 == 0 then print() end
+        local by = string.byte(i)
+        if by < 126 and by > 31 and not hexonly then
+            io.write(i)
+        else
+            io.write(string.format("%X ", by))
+        end
+    end)
+end
+
+local f = io.open(arg[1], "r")
+if not f then print("not found") return end
+local data = f:read("*a")
+f:close()
+if data then
+    trashfor(data)
+end
+print()

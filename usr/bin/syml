@@ -1,0 +1,27 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+ffi.cdef[[
+  int symlink(const char *target, const char *linkpath);
+  long readlink(const char *path, char *buf, unsigned long bufsiz);
+  char* strerror(int err);
+]]
+
+local source = arg[1]
+local to = arg[2]
+
+if source == "-r" then
+    local buf = ffi.new("char[4096]")
+    if ffi.C.readlink(to, buf, 4095) ~= -1 then
+        print(ffi.string(buf))
+    else
+        print(ffi.string(ffi.C.strerror(ffi.errno())))
+    end
+    return
+end
+
+if ffi.C.symlink(source, to) ~= 0 then
+    print(ffi.string(ffi.C.strerror(ffi.errno())))
+else
+    print("success")
+end

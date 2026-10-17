@@ -1,0 +1,85 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+ffi.cdef[[
+typedef long time_t;
+
+typedef struct timespec {
+    time_t tv_sec;
+    long tv_nsec;
+};
+
+typedef struct {
+    time_t user_sec;
+    long user_usec;
+
+    time_t sys_sec;
+    long sys_usec;
+
+    long maxrss;
+    long ixrss;
+    long idrss;
+    long isrss;
+    long minflt;
+    long majflt;
+    long nswap;
+    long inblock;
+    long oublock;
+    long msgsnd;
+    long msgrcv;
+    long nsignals;
+    long nvcsw;
+    long nivcsw;
+} rusage;
+
+int clock_gettime(int clk_id, struct timespec *tp);
+int getrusage(int who, rusage *r);
+int execvp(const char *file, char *const argv[]);
+int fork();
+int wait4(int pid, int *status, int options, rusage *rusage);
+]]
+
+local usage = ffi.new("rusage")
+local function nanotime()
+    local ts = ffi.new("struct timespec")
+    ffi.C.clock_gettime(4, ts)
+
+    return tonumber(ts.tv_sec) * 1000000000
+         + tonumber(ts.tv_nsec)
+end
+
+local first = nanotime()
+local pid
+
+do
+    pid = ffi.C.fork()
+    if pid == 0 then
+        local argv = ffi.new("char*[?]", #arg + 1)
+        argv[0] = ffi.cast("char*", arg[1])
+        for argindex = 2, #arg do
+            argv[argindex - 1] = ffi.cast("char*", arg[argindex])
+        end
+        argv[#arg] = ffi.NULL
+        ffi.C.execvp(arg[1], argv)
+        os.exit(127)
+    end
+end
+
+ffi.C.wait4(pid, nil, 0, usage)
+
+local later = nanotime()
+local delta = later - first
+
+print(string.format("%-25s ns",       delta))
+print(string.format("%-25s ms",       delta / 1e6))
+print(string.format("%-25s s",        delta / 1e9))
+print(string.format("%-25s µs user",     tonumber(usage.user_usec)))
+print(string.format("%-25s µs sys",      tonumber(usage.sys_usec)))
+print(string.format("%-25s nswap",    tonumber(usage.nswap)))
+print(string.format("%-25s maxrss",   tonumber(usage.maxrss)))
+print(string.format("%-25s msgsnd",   tonumber(usage.msgsnd)))
+print(string.format("%-25s inblock",  tonumber(usage.inblock)))
+print(string.format("%-25s oublock",  tonumber(usage.oublock)))
+print(string.format("%-25s nsignals", tonumber(usage.nsignals)))
+print(string.format("%-25s minflt",   tonumber(usage.minflt)))
+print(string.format("%-25s majflt",   tonumber(usage.majflt)))

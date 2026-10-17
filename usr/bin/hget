@@ -1,0 +1,45 @@
+#!/usr/bin/env -S luajit
+
+local host = arg[1]
+local path = arg[2] or "/"
+local port = tonumber(arg[3] or 80)
+local net = require("luajit_replit.net")
+local bodyonly = arg[4] == "-b"
+local tcp = net.tcp()
+
+local resolved = net.dresolve(host, 0)
+
+if not resolved then
+    print("failed to resolve " .. host)
+    tcp:close()
+    return
+end
+
+local connected = tcp:connect(resolved, port)
+
+if connected == -1 then
+    print("failed to connect " .. host .. ":" .. port .. ": " .. net.geterrorstr())
+    return
+end
+
+tcp:write("GET " .. path .. " HTTP/1.1\r\nConnection: close\r\nHost: " .. host .. "\r\n\r\n")
+
+local datatable = {}
+
+while true do
+    local data = tcp:read(4096)
+    if not data then break end
+    if bodyonly then
+        table.insert(datatable, data)
+    else
+        print(data)
+    end
+end
+
+if bodyonly then
+   local body = table.concat(datatable):match("\r\n\r\n(.*)")
+
+   print(body)
+end
+
+tcp:close()

@@ -1,0 +1,28 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+if not arg[1] then
+   print("usage: <filename>")
+   print("usage: -d <dirname>");
+   return
+end
+
+ffi.cdef[[
+  int rmdir(const char* dir);
+  int unlink(const char* file);
+  char* strerror(int err);
+]]
+
+local ret = 0
+
+if arg[1] == "-d" then
+    ret = ffi.C.rmdir(arg[2])
+else
+    ret = ffi.C.unlink(arg[1])
+end
+
+if ret == -1 then
+    print(ffi.string(ffi.C.strerror(ffi.errno())))
+else
+    print("success")
+end

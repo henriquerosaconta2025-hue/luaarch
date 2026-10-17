@@ -1,0 +1,31 @@
+#!/usr/bin/env -S luajit
+local sysrq = io.open("/proc/sysrq-trigger", "w")
+
+if not sysrq then
+    print("could not open sysrq")
+    return
+end
+
+if not arg[1] then
+   print("usage: <o, b, s>")
+   return
+end
+
+if arg[1] == "o" then
+    print("going down!")
+    sysrq:write("s") sysrq:flush()
+    sysrq:write("u") sysrq:flush()
+    sysrq:write("s") sysrq:flush()
+    sysrq:write("o") sysrq:flush()
+elseif arg[1] == "b" then
+    print("rebooting!")
+    sysrq:write("s") sysrq:flush()
+    sysrq:write("u") sysrq:flush()
+    sysrq:write("s") sysrq:flush()
+    sysrq:write("b") sysrq:flush()
+elseif arg[1] == "s" then
+    print("syncing!")
+    sysrq:write("s") sysrq:flush()
+end
+
+sysrq:close()

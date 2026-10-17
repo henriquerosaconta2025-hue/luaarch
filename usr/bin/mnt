@@ -1,0 +1,25 @@
+#!/usr/bin/env -S luajit
+
+local ffi = require("ffi")
+
+ffi.cdef([[
+    int sync();
+    int umount2(const char *target, int flags);
+    int mount(const char *source, const char *target, const char *filesystemtype, unsigned long mountflags, const void *data);
+    char *strerror(int errnum);
+    int * __errno_location(void);
+]])
+
+ffi.C.sync()
+
+if arg[1] == "unmount" then
+    local ret = ffi.C.umount2(arg[2], tonumber(arg[3]) or 0)
+    local err = ffi.string(ffi.C.strerror(ffi.errno()))
+    print(err)
+end
+
+if arg[1] == "mount" then
+   local ret = ffi.C.mount(arg[2], arg[3], arg[4], tonumber(arg[5]) or 0, arg[6] or nil)
+   local err = ffi.string(ffi.C.strerror(ffi.errno()))
+   print(err)
+end

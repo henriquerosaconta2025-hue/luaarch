@@ -1,0 +1,29 @@
+#!/usr/bin/env -S luajit
+local ffi = require("ffi")
+
+if not arg[1] or not arg[2] then
+    print("usage: <file> <perms>")
+    return
+end
+
+local file = arg[1]
+local perms = tonumber(arg[2], 8)
+
+if not perms then
+   print("invalid octal perm.")
+   print("usage: <file> <perms>")
+   return
+end
+
+ffi.cdef[[
+  int chmod(const char* file, int perms);
+  char* strerror(int err);
+]]
+
+local chmoded = ffi.C.chmod(file, perms)
+
+if chmoded ~= 0 then
+    print(ffi.string(ffi.C.strerror(ffi.errno())))
+else
+    print("success")
+end

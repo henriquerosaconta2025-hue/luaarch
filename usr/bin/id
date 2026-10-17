@@ -1,0 +1,8 @@
+#!/usr/bin/env -S luajit
+local users = require("users.users")
+local infos = users.getperms()
+
+print("GID: ", infos.gid)
+print("UID: ", infos.uid)
+print("EGID: ", infos.egid)
+print("EUID: ", infos.euid)

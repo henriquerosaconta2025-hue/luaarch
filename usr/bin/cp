@@ -1,0 +1,28 @@
+#!/usr/bin/env -S luajit
+
+if not arg[1] and not arg[2] then
+   print("usage: <entry> <out>")
+   return
+end
+
+local first, err = io.open(arg[1], "r")
+local fidata = {}
+
+if not first then
+   print(err)
+   return
+end
+
+while true do
+    local chunk = first:read(4096)
+    if not chunk then break end
+    table.insert(fidata, chunk)
+end
+
+local second, seconderr = io.open(arg[2], "w")
+if not second then
+   print(seconderr)
+end
+second:write(table.concat(fidata))
+second:close()
+first:close()
