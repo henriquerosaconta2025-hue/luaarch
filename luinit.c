@@ -15,7 +15,10 @@ int main(int argc, char **argv) {
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
 
     printf("mounting /dev/vda on /userspace as EXT4. (userspace disk)\n");
-    mount("/dev/vda", "/userspace", "ext4", 0, NULL);
+    if (mount("/dev/vda", "/userspace", "ext4", 0, NULL) == -1) {
+       perror("CRITICAL: could not mount /dev/vda!!!! ");
+       return 1;
+    }
 
     chroot("/userspace");
     chdir("/");
