@@ -45,7 +45,7 @@ end
 
 ffi.cdef([[
   // functions
-  int fcntl(int, int, int); // varags dont work
+  int fcntl(int, int, ...); // varags dont work
   int socket(int, int, int);
   int connect(int, const struct sockaddr *addr, int);
   int write(int, const void*, int);
@@ -287,7 +287,7 @@ function m.parseClient(text)
 end
 
 function m.isValid(fd)
-  return c.fcntl(fd, 3, 0)
+  return c.fcntl(fd, 3, ffi.cast("int", 0))
 end
 
 function m.isConnected(fd)
@@ -330,8 +330,8 @@ function m.tcp()
       return c.connect(sock, ptr, ffi.sizeof(addr))
     end,
 
-    fcntl = function(self, cmd, arg)
-      return c.fcntl(sock, cmd, arg)
+    fcntl = function(self, cmd, ...)
+      return c.fcntl(sock, cmd, ...)
     end,
 
     setsockopt = function(self, level, optname, optval)
@@ -341,7 +341,7 @@ function m.tcp()
 
     noblock = function()
       local flags = c.fcntl(sock, 3, 0)
-      return c.fcntl(sock, 4, flags + 2048)
+      return c.fcntl(sock, 4, ffi.cast("int", bit.bor(flags, 2048)))
     end,
 
     settimeout = function(self, ms)
@@ -499,7 +499,7 @@ function m.udp()
     end,
     noblock = function()
       local flags = c.fcntl(sock, 3, 0)
-      return c.fcntl(sock, 4, flags + 2048)
+      return c.fcntl(sock, 4, ffi.cast("int", bit.bor(flags, 2048)))
     end,
     settimeout = function(self, ms)
       local vms = ffi.new("int[1]")
@@ -517,11 +517,11 @@ end
 
 
 
-function m.raw(idk, prot)
+function m.raw(domain, prot, type)
   local obj = {}
   local mt = {}
 
-  local sock = c.socket(idk or 2, 3, prot or 255)
+  local sock = c.socket(domain or 2, type or 3, prot or 255)
 
   setmetatable(obj, mt)
 
@@ -612,7 +612,7 @@ function m.raw(idk, prot)
 
     noblock = function()
       local flags = c.fcntl(sock, 3, 0)
-      return c.fcntl(sock, 4, flags + 2048)
+      return c.fcntl(sock, 4, ffi.cast("int", bit.bor(flags, 2048)))
     end,
   }
 

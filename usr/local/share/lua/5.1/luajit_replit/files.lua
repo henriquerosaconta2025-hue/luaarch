@@ -19,7 +19,7 @@ ffi.cdef [[
   int rmdir(const char* path);
   int unlink(const char* path);
   int rename(const char* oldpath, const char* newpath);
-  void chmod(const char* path, int mode);
+  int chmod(const char* path, int mode);
   int flock(int fd, int operation);
   int open(const char *pathname, int flags, int mode);
   ssize_t read(int fd, void *buf, size_t count);
