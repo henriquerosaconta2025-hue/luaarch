@@ -2,4 +2,4 @@
 set -e
 rm -f luaarch-rootfs.img
 chmod -R a+x luaarch
-mkfs.ext4 -d luaarch luaarch-rootfs.img 1G
+mkfs.ext4 -d luaarch luaarch-rootfs.img 6G
